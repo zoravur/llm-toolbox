@@ -1,0 +1,18 @@
+{
+  "name": "epub-translator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "In-browser EPUB reader that translates books with the DeepSeek API and exports a translated EPUB.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test/smoke.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "fixture": "node test/fixture.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

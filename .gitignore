@@ -1,0 +1,17 @@
+# Dependencies (the app itself ships with none)
+node_modules/
+
+# Local agent memory store (not part of the app)
+memories.db
+memories.db-*
+
+# Generated test fixture (rebuilt by test/fixture.mjs on demand)
+test/fixtures/
+
+# OS noise
+.DS_Store
+
+# Python test harness caches
+.pytest_cache/
+__pycache__/
+*.pyc

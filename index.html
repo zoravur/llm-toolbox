@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>EPUB Translator · DeepSeek</title>
+  <link rel="stylesheet" href="styles/main.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- ===================== Left control panel ===================== -->
+    <aside class="panel" id="panel" aria-label="Translation controls">
+      <header class="brand">
+        <div class="brand-mark">EP</div>
+        <div>
+          <div class="brand-title">EPUB Translator</div>
+          <div class="brand-sub">Read &amp; translate in the browser</div>
+        </div>
+      </header>
+
+      <section class="block">
+        <h2 class="block-title">1 · Book</h2>
+        <div
+          class="dropzone"
+          id="dropzone"
+          role="button"
+          tabindex="0"
+          aria-label="Upload an EPUB file"
+        >
+          <input type="file" id="file-input" accept=".epub,application/epub+zip" hidden />
+          <div class="dropzone-icon">＋</div>
+          <div class="dropzone-text"><strong>Drop an EPUB</strong> or <span class="link">browse</span></div>
+          <div class="dropzone-hint">.epub · parsed entirely in your browser</div>
+        </div>
+
+        <div class="book-card" id="book-card" hidden>
+          <div class="book-card-body">
+            <div class="book-title" id="book-title">—</div>
+            <div class="book-creator" id="book-creator">—</div>
+            <div class="book-meta" id="book-meta"></div>
+          </div>
+          <button class="icon-btn" id="book-reset" title="Remove book" aria-label="Remove book">✕</button>
+        </div>
+        <div class="estimate" id="estimate" hidden></div>
+      </section>
+
+      <section class="block">
+        <h2 class="block-title">2 · DeepSeek</h2>
+        <label class="field">
+          <span class="field-label">API key</span>
+          <span class="input-row">
+            <input
+              type="password"
+              id="api-key"
+              class="text-input"
+              placeholder="sk-…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button class="ghost-btn" id="toggle-key" type="button">Show</button>
+          </span>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="remember-key" />
+          <span>Remember key on this device (stored in localStorage)</span>
+        </label>
+        <p class="hint">Your key is sent only to <code>api.deepseek.com</code> from this browser tab.</p>
+
+        <label class="field">
+          <span class="field-label">Model</span>
+          <select id="model-select" class="select-input"></select>
+        </label>
+      </section>
+
+      <section class="block">
+        <h2 class="block-title">3 · Languages</h2>
+        <div class="lang-grid">
+          <label class="field">
+            <span class="field-label">From</span>
+            <select id="lang-from" class="select-input"></select>
+          </label>
+          <div class="lang-arrow" aria-hidden="true">→</div>
+          <label class="field">
+            <span class="field-label">To</span>
+            <select id="lang-to" class="select-input"></select>
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="field-label">Scope</span>
+          <select id="scope-select" class="select-input">
+            <option value="book">Whole book</option>
+            <option value="chapter">Current section only</option>
+          </select>
+        </label>
+
+        <div class="actions">
+          <button class="primary-btn" id="translate-btn" type="button" disabled>
+            <span class="btn-label">Translate</span>
+          </button>
+          <button class="ghost-btn danger" id="cancel-btn" type="button" hidden>Cancel</button>
+        </div>
+
+        <div class="progress" id="progress" hidden>
+          <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+          <div class="progress-text" id="progress-text"></div>
+        </div>
+
+        <div class="usage" id="usage" hidden>
+          <div class="usage-head">
+            <span>Token usage</span>
+            <span class="usage-note">actual, from the API</span>
+          </div>
+          <dl class="usage-grid">
+            <dt>Prompt</dt><dd id="usage-prompt">0</dd>
+            <dt>Completion</dt><dd id="usage-completion">0</dd>
+            <dt>Total tokens</dt><dd id="usage-total">0</dd>
+            <dt>Requests</dt><dd id="usage-requests">0</dd>
+            <dt>Est. cost</dt><dd id="usage-cost">$0.00</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2 class="block-title">4 · Export</h2>
+        <button class="primary-btn" id="download-btn" type="button" disabled>
+          <span class="btn-label">Download translated EPUB</span>
+        </button>
+      </section>
+
+      <section class="block grow">
+        <h2 class="block-title">Activity</h2>
+        <div class="log" id="log"><div class="log-list" id="log-list"></div></div>
+      </section>
+
+      <footer class="panel-footer">
+        Everything runs client-side. Nothing is uploaded to a server.
+      </footer>
+    </aside>
+
+    <!-- ===================== Reader ===================== -->
+    <main class="reader-shell">
+      <header class="reader-toolbar">
+        <button class="icon-btn toolbar-menu" id="sidebar-toggle" title="Toggle panel" aria-label="Toggle panel">☰</button>
+        <div class="toolbar-title">
+          <div class="toolbar-book" id="reader-book-title">No book loaded</div>
+          <div class="toolbar-chapter" id="chapter-title"></div>
+        </div>
+
+        <div class="toolbar-controls">
+          <div class="segmented" role="group" aria-label="View mode">
+            <button type="button" data-view="original" class="active">Original</button>
+            <button type="button" data-view="translated">Translated</button>
+          </div>
+
+          <button class="icon-btn" id="prev-btn" title="Previous section" aria-label="Previous section">‹</button>
+          <select id="toc-select" class="select-input toc-select" aria-label="Table of contents" disabled></select>
+          <button class="icon-btn" id="next-btn" title="Next section" aria-label="Next section">›</button>
+
+          <button class="icon-btn" id="font-dec" title="Smaller text" aria-label="Smaller text">A−</button>
+          <button class="icon-btn" id="font-inc" title="Larger text" aria-label="Larger text">A+</button>
+          <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">☾</button>
+        </div>
+      </header>
+
+      <div class="reader-stage">
+        <div class="view-note" id="view-note" hidden></div>
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">📖</div>
+          <h1>Upload an EPUB to start reading</h1>
+          <p>It is parsed locally. Paste a DeepSeek API key, pick a language, translate, then download the translated <code>.epub</code>.</p>
+          <button class="primary-btn" id="empty-browse" type="button">Choose EPUB file</button>
+        </div>
+        <div class="reader-host" id="reader"></div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="vendor/jszip.min.js"></script>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

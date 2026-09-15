@@ -67,6 +67,31 @@ No install step is required (there are no dependencies). Then:
 You can also serve the folder with any static server, e.g.
 `python3 -m http.server 3000`.
 
+## Deploy to GitHub Pages
+
+The app is a static site — plain HTML, CSS and ES modules with **no build step** —
+so the repository root is published as-is. All asset references are **relative**
+(`styles/main.css`, `src/main.js`, `./epub.js`, …), so it works unchanged under a
+project subpath such as `https://<user>.github.io/<repo>/`.
+
+A workflow is included at `.github/workflows/pages.yml`. To turn on publishing:
+
+1. Push this repository to GitHub.
+2. In **Settings → Pages → Build and deployment**, set **Source** to
+   **GitHub Actions**.
+3. Push to `main` (or run the *Deploy to GitHub Pages* workflow manually). The
+   site goes live at `https://<user>.github.io/<repo>/`.
+
+Notes:
+
+- A `.nojekyll` file is included so GitHub serves the files verbatim instead of
+  running them through Jekyll.
+- Pages serves over **HTTPS**, and the DeepSeek API is called directly from the
+  browser over HTTPS with permissive CORS — no proxy is needed. You provide your
+  own API key at runtime; nothing is stored on the server.
+- `server.js` is only a convenience for local development and is not needed on
+  Pages.
+
 ## How it works
 
 | File | Responsibility |

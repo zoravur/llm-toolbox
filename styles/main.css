@@ -166,6 +166,56 @@ select {
   padding-top: 0.7rem;
 }
 
+/* ------------------------------------------------------ security notice */
+
+.security-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid color-mix(in srgb, #d97706 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #f59e0b 14%, var(--panel-bg));
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--panel-fg);
+}
+
+.security-notice[hidden] {
+  display: none;
+}
+
+.security-notice-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.security-notice-head .icon-btn {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+}
+
+.security-notice-icon {
+  color: #b45309;
+}
+
+.security-notice p {
+  margin: 0;
+  color: var(--panel-muted);
+}
+
+.security-notice a {
+  color: var(--accent);
+}
+
+.security-notice-warn {
+  font-weight: 600;
+  color: var(--panel-fg);
+}
+
 /* ------------------------------------------------------------ dropzone */
 
 .dropzone {
@@ -660,6 +710,14 @@ select {
 .reader-host {
   position: absolute;
   inset: 0;
+}
+
+.reader-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--reader-bg);
 }
 
 .view-note {

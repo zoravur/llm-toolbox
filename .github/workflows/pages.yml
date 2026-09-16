@@ -34,11 +34,22 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      # Publish only the app's public assets. Serving the whole repository would
+      # expose tracked working files (README, server, tests, …) as well as any
+      # local/private files that happen to be present — see
+      # epub-security-audit.md finding #2.
+      - name: Assemble public site
+        run: |
+          mkdir -p _site
+          cp index.html .nojekyll _site/
+          cp -R src styles vendor _site/
+          if [ -f epub-security-audit.md ]; then cp epub-security-audit.md _site/; fi
+
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # No build step — the repo root is the site.
-          path: .
+          # Only the explicitly selected public assets.
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment

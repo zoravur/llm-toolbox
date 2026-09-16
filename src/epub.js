@@ -19,6 +19,29 @@ const XHTML_MEDIA_TYPES = new Set([
   'application/x-dtbook+xml',
 ]);
 
+// Bounds against zip-bomb / resource-exhaustion input (audit finding #3).
+// Declared header sizes are checked before anything is decompressed, and the
+// actual decompressed byte count is verified as entries are read. The declared
+// sizes cannot be trusted on their own, so both checks are applied.
+export const ARCHIVE_LIMITS = {
+  maxInputBytes: 100 * 1024 * 1024, // compressed .epub on disk
+  maxEntries: 4000,
+  maxEntryUncompressedBytes: 32 * 1024 * 1024,
+  maxTotalUncompressedBytes: 256 * 1024 * 1024,
+};
+
+/** Declared sizes from the zip central directory, when JSZip exposes them. */
+function declaredSizes(entry) {
+  const data = entry && entry._data;
+  if (data && typeof data.uncompressedSize === 'number') {
+    return {
+      compressed: Number(data.compressedSize) || 0,
+      uncompressed: Number(data.uncompressedSize) || 0,
+    };
+  }
+  return null;
+}
+
 const EXTENSION_MIME = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
   webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml', bmp: 'image/bmp',
@@ -115,15 +138,65 @@ export class EpubBook {
     this.resourceUrls = new Map();
     /** @type {Map<string,Promise<string>>} zip path -> cached text read */
     this.textCache = new Map();
+    /** @type {Set<string>} paths whose decompressed bytes count toward the budget */
+    this.countedPaths = new Set();
+    /** @type {number} unique decompressed bytes read so far */
+    this.bytesRead = 0;
   }
 
   /** @param {File|Blob|ArrayBuffer} input */
   static async open(input) {
     const buffer = input instanceof ArrayBuffer ? input : await input.arrayBuffer();
+    if (buffer.byteLength > ARCHIVE_LIMITS.maxInputBytes) {
+      throw new Error(
+        `This EPUB is too large (${Math.round(buffer.byteLength / (1024 * 1024))} MB). `
+        + `The limit is ${Math.round(ARCHIVE_LIMITS.maxInputBytes / (1024 * 1024))} MB.`,
+      );
+    }
     const zip = await JSZip.loadAsync(buffer);
+    EpubBook.#precheckZip(zip);
     const book = new EpubBook(zip, input.name);
     await book.#init();
     return book;
+  }
+
+  /** Reject archives whose entry count or declared sizes exceed the limits. */
+  static #precheckZip(zip) {
+    const names = Object.keys(zip.files);
+    if (names.length > ARCHIVE_LIMITS.maxEntries) {
+      throw new Error(
+        `This EPUB contains too many files (${names.length}). `
+        + `The limit is ${ARCHIVE_LIMITS.maxEntries}.`,
+      );
+    }
+    let declaredTotal = 0;
+    for (const name of names) {
+      const entry = zip.files[name];
+      if (entry.dir) continue;
+      const sizes = declaredSizes(entry);
+      if (!sizes) continue;
+      if (sizes.uncompressed > ARCHIVE_LIMITS.maxEntryUncompressedBytes) {
+        throw new Error(`This EPUB contains an oversized file (${name}).`);
+      }
+      declaredTotal += sizes.uncompressed;
+      if (declaredTotal > ARCHIVE_LIMITS.maxTotalUncompressedBytes) {
+        throw new Error('This EPUB expands to more data than the reader allows.');
+      }
+    }
+  }
+
+  /** Account for the actual decompressed size of an entry and enforce the budget. */
+  #chargeBytes(path, size) {
+    if (size > ARCHIVE_LIMITS.maxEntryUncompressedBytes) {
+      throw new Error(`This EPUB contains an oversized file (${path}).`);
+    }
+    if (!this.countedPaths.has(path)) {
+      this.countedPaths.add(path);
+      this.bytesRead += size;
+    }
+    if (this.bytesRead > ARCHIVE_LIMITS.maxTotalUncompressedBytes) {
+      throw new Error('This EPUB expands to more data than the reader allows.');
+    }
   }
 
   async #init() {
@@ -258,7 +331,11 @@ export class EpubBook {
     if (!this.textCache.has(path)) {
       const entry = this.zip.file(path);
       if (!entry) throw new Error(`Missing entry in EPUB: ${path}`);
-      this.textCache.set(path, entry.async('string'));
+      this.textCache.set(path, (async () => {
+        const bytes = await entry.async('uint8array');
+        this.#chargeBytes(path, bytes.byteLength);
+        return new TextDecoder('utf-8').decode(bytes);
+      })());
     }
     return this.textCache.get(path);
   }
@@ -291,6 +368,7 @@ export class EpubBook {
     const entry = this.zip.file(path);
     if (!entry) return null;
     const blob = await entry.async('blob');
+    this.#chargeBytes(path, blob.size);
     const typed = blob.type ? blob : new Blob([blob], { type: guessMime(path) });
     const url = URL.createObjectURL(typed);
     this.resourceUrls.set(path, url);
@@ -332,7 +410,9 @@ export class EpubBook {
       if (replacement != null) {
         out.file(name, replacement, { compression: 'DEFLATE' });
       } else {
-        out.file(name, await entry.async('uint8array'), { binary: true, compression: 'DEFLATE' });
+        const bytes = await entry.async('uint8array');
+        this.#chargeBytes(name, bytes.byteLength);
+        out.file(name, bytes, { binary: true, compression: 'DEFLATE' });
       }
     }
 

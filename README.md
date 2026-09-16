@@ -6,14 +6,39 @@ Upload an EPUB, read it right in the browser, translate it to **any** language w
 Everything runs client-side. There is no backend, no build step and no npm
 dependencies — just static files plus a tiny static server for local development.
 
+## Security
+
+> ⚠ **Treat every EPUB as untrusted content.** An EPUB can contain active markup.
+> Only paste a DeepSeek API key into a copy of this app you trust, and prefer a
+> restricted, rotated key.
+
+A security audit (`epub-security-audit.md`) reviewed this project and reported
+the issues below. All of them have been addressed:
+
+| # | Severity | Issue | Status |
+|---|----------|-------|--------|
+| 1 | High | A malicious EPUB could execute JavaScript in the app's origin and read the DeepSeek API-key input — via event-handler attributes, nested `srcdoc` iframes, embedded HTML served as same-origin blob URLs, and `javascript:` links. | **Fixed.** Chapters now render inside a sandboxed `<iframe>` with **scripts disabled**, and the markup is passed through an allowlist sanitizer (`src/sanitize.js`). Event handlers, `iframe`/`object`/`embed`/`srcdoc`, executable URL schemes and external resources are all removed, and each book document carries a restrictive CSP. |
+| 2 | High | The local static server served any file under the repository root (`.git/`, the local `memories.db`, …) and listened on all interfaces. | **Fixed.** The server binds to `127.0.0.1` by default and serves only an explicit allowlist of public assets, resolving real paths so symlinks cannot escape. The GitHub Pages artifact is assembled from the same allowlist. |
+| 3 | Medium | Archive expansion was unbounded, so a crafted EPUB could exhaust the browser tab. | **Mitigated.** Input size, entry count, per-entry expanded size and cumulative expanded bytes are all bounded (`ARCHIVE_LIMITS` in `src/epub.js`). |
+
+Remaining caveats worth knowing:
+
+- The reader sandbox disables **scripts** but keeps `allow-same-origin` so the app
+  can drive in-book navigation and scroll position. With scripts disabled, book
+  content still cannot run code or read the API key. See `src/reader.js`.
+- Decompression limits check the zip's declared sizes first and the real byte
+  count while reading. This bounds abuse but is deliberately not a worker-based
+  hard kill-switch, and it caps very large (mostly image-heavy) books.
+- Please report security problems privately rather than in a public issue tracker.
+
 ```
 ┌───────────────────────────┬───────────────────────────────────────────┐
 │  1 · Book                 │  Original │ Translated      ‹  TOC  ›  A− A+ │
 │  [ drop / browse EPUB ]   │ ┌───────────────────────────────────────┐ │
 │                           │ │                                       │ │
-│  2 · DeepSeek             │ │   Chapter rendered inside an isolated  │ │
-│  API key  [sk-…]  Show    │ │   shadow root, styled by the book's    │ │
-│  Model    [deepseek-chat] │ │   own CSS, with images inlined.        │ │
+│  2 · DeepSeek             │ │   Chapter rendered in a sandboxed      │ │
+│  API key  [sk-…]  Show    │ │   frame without scripts, styled by     │ │
+│  Model    [deepseek-chat] │ │   the book, images inlined.            │ │
 │                           │ │                                       │ │
 │  3 · Languages            │ │                                       │ │
 │  From [Auto] → To [English]│ │                                       │ │
@@ -26,8 +51,8 @@ dependencies — just static files plus a tiny static server for local developme
 
 - **In-browser EPUB reader** — parses the container, OPF manifest, spine and the
   EPUB&nbsp;3 nav / EPUB&nbsp;2 NCX table of contents. Chapters render inside a
-  shadow root so the book's stylesheet can't leak into the app, and images, fonts
-  and CSS `url(...)` references are rewritten to blob URLs so they just work.
+  sandboxed iframe with scripts disabled and are sanitised, and images, fonts
+  and CSS `url(...)` references are rewritten to same-origin blob URLs so they just work.
 - **Left control panel** — paste your DeepSeek API key, choose a model, pick
   **From → To** languages (source defaults to *Auto-detect*), and choose whether to
   translate the **whole book** or just the **current section**.
@@ -53,12 +78,12 @@ dependencies — just static files plus a tiny static server for local developme
 ## Quick start
 
 ```bash
-npm start           # serves http://localhost:3000
+npm start           # serves http://127.0.0.1:3000 (set HOST=0.0.0.0 to share)
 ```
 
 No install step is required (there are no dependencies). Then:
 
-1. Open <http://localhost:3000>.
+1. Open <http://127.0.0.1:3000>.
 2. Drop an `.epub` onto the drop zone.
 3. Paste your DeepSeek API key (get one at <https://platform.deepseek.com>).
 4. Pick **From** and **To** languages and press **Translate**.
@@ -69,10 +94,12 @@ You can also serve the folder with any static server, e.g.
 
 ## Deploy to GitHub Pages
 
-The app is a static site — plain HTML, CSS and ES modules with **no build step** —
-so the repository root is published as-is. All asset references are **relative**
-(`styles/main.css`, `src/main.js`, `./epub.js`, …), so it works unchanged under a
-project subpath such as `https://<user>.github.io/<repo>/`.
+The app is a static site — plain HTML, CSS and ES modules with **no build step**.
+The workflow copies only the public assets (`index.html`, `src/`, `styles/`,
+`vendor/`, plus `epub-security-audit.md` for reference) into the Pages artifact,
+so working files such as `server.js` and the tests are not published. All asset
+references are **relative** (`styles/main.css`, `src/main.js`, `./epub.js`, …), so
+it works unchanged under a project subpath such as `https://<user>.github.io/<repo>/`.
 
 A workflow is included at `.github/workflows/pages.yml`. To turn on publishing:
 
@@ -102,7 +129,8 @@ Notes:
 | `src/epub.js` | EPUB parsing (container/OPF/spine/TOC) and re-packaging. |
 | `src/epub-text.js` | Markup scanner that segments translatable text and splices translations back. |
 | `src/deepseek.js` | DeepSeek chat-completions client: batching, JSON mode, retries. |
-| `src/reader.js` | Shadow-DOM chapter renderer with resource/CSS rewriting. |
+| `src/reader.js` | Sandboxed-iframe chapter renderer with resource/CSS rewriting. |
+| `src/sanitize.js` | Allowlist sanitizer for untrusted EPUB markup. |
 | `src/languages.js` | Language catalog + normalization helpers. |
 | `src/tokens.js` | Token estimation, peak/off-peak pricing and cost maths. |
 | `vendor/jszip.min.js` | Vendored JSZip (read/write zip in the browser). |
@@ -167,7 +195,7 @@ Known limitations worth knowing:
 
 ```bash
 npm test            # 28 headless checks: segmentation, entities, tokens/cost, API contract, repackaging
-npm run test:e2e    # drives real headless Chrome through the whole flow (31 checks)
+npm run test:e2e    # drives real headless Chrome through the whole flow (42 checks, incl. security)
 python -m pytest test   # the Node suite via the portable harness
 ```
 
@@ -184,6 +212,10 @@ python -m pytest test   # the Node suite via the portable harness
 
 - Very large books produce many API calls and cost tokens; use *Current section
   only* to translate incrementally.
+- Archives are bounded (see `ARCHIVE_LIMITS`); extremely large image-heavy books
+  may be refused.
+- Book scripts, external resources and popups are disabled by the sandbox; a
+  chapter that depends on JavaScript to lay itself out will not run that script.
 - Text inside images (covers, plates) is not OCR'd.
 - Page-break/`page-progression` RTL heuristics are basic.
 - The exported EPUB is repackaged with JSZip; most readers accept it, but a strict

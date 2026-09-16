@@ -1,16 +1,49 @@
 // In-browser chapter renderer.
 //
-// Rendered inside a shadow root so the book's own CSS cannot leak into the app
-// chrome (and vice-versa), while still letting the exported styles apply. Images,
-// fonts and stylesheets from the EPUB are rewritten to blob URLs so they resolve
-// without a server.
+// Untrusted book markup is rendered inside a sandboxed <iframe>, never directly
+// in the app document. The iframe is created with `sandbox="allow-same-origin"`
+// and, crucially, WITHOUT `allow-scripts`: every script in the book — inline
+// <script>, event-handler attributes, javascript: URLs and nested frames — is
+// therefore blocked by the browser sandbox. `allow-same-origin` is kept so the
+// reader can drive navigation and scroll position and so the e2e suite can
+// inspect the rendered document; with scripts disabled that same-origin
+// document cannot run any code against the app or read the API-key input.
+//
+// This mirrors epub-security-audit.md finding #1. As defence in depth the markup
+// is also passed through an allowlist sanitizer (src/sanitize.js), every
+// resource is rewritten to a same-origin blob URL, external resources are
+// dropped, and the book document carries a restrictive CSP.
 
 import { dirname, resolvePath } from './epub.js';
+import { sanitizeCss, sanitizeDocument } from './sanitize.js';
 
 const XLINK_NS = 'http://www.w3.org/1999/xlink';
 
+// Content Security Policy for every book document: no scripts, no plugins, no
+// network, no frames. Only same-origin blob/data resources and inline styles.
+const BOOK_CSP = [
+  "default-src 'none'",
+  "img-src 'self' blob: data:",
+  "media-src 'self' blob: data:",
+  "font-src 'self' blob: data:",
+  "style-src 'unsafe-inline'",
+  "script-src 'none'",
+  "object-src 'none'",
+  "frame-src 'none'",
+  "child-src 'none'",
+  "connect-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join('; ');
+
+const BLANK_DOC = '<!DOCTYPE html><html><head><meta charset="utf-8">'
+  + `<meta http-equiv="Content-Security-Policy" content="${BOOK_CSP}"></head><body></body></html>`;
+
+// Base styling for the book document itself (the iframe's own document, so
+// these select html/body rather than :host).
 const BASE_CSS = `
-  :host { display:block; height:100%; overflow-y:auto; background: var(--reader-bg); color: var(--reader-fg); }
+  html, body { margin:0; padding:0; }
+  body { background: var(--reader-bg); color: var(--reader-fg); }
   .page { min-height:100%; box-sizing:border-box; padding: 3rem 1.5rem 7rem; }
   .chapter-content {
     max-width: var(--reader-measure, 40rem);
@@ -39,38 +72,89 @@ const BASE_CSS = `
   ::selection { background: var(--reader-selection); }
 `;
 
+// App CSS variables copied into the book document so theming and font size
+// changes keep working inside the isolated iframe.
+const READER_VARS = [
+  '--reader-bg', '--reader-fg', '--reader-link', '--reader-rule',
+  '--reader-code-bg', '--reader-selection', '--reader-font-size',
+  '--reader-line-height', '--reader-measure', '--reader-font',
+];
+
 function escapeCssIdent(value) {
   if (globalThis.CSS?.escape) return CSS.escape(value);
   return String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
+}
+
+function escapeStyleText(text) {
+  // Prevent a book stylesheet from closing its own <style> element.
+  return String(text).replace(/<\/(style|script)/gi, '<\\/$1');
 }
 
 const ABSOLUTE_URL = /^(data:|https?:|\/\/|#|blob:|mailto:|tel:|javascript:)/i;
 
 export class Reader {
   /**
-   * @param {HTMLElement} host an empty element that will own the shadow root
+   * @param {HTMLElement} host an element that will hold the sandboxed iframe
    */
   constructor(host) {
     this.host = host;
-    this.shadow = host.attachShadow({ mode: 'open' });
-    this.shadow.innerHTML = `
-      <div class="epub-styles"></div>
-      <style class="reader-base">${BASE_CSS}</style>
-      <div class="page"><div class="chapter-content" part="content"></div></div>
-    `;
-    this.styleHost = this.shadow.querySelector('.epub-styles');
-    this.container = this.shadow.querySelector('.chapter-content');
+    this.frame = document.createElement('iframe');
+    this.frame.className = 'reader-frame';
+    this.frame.setAttribute('title', 'Book content');
+    this.frame.setAttribute('referrerpolicy', 'no-referrer');
+    // No `allow-scripts`: EPUB content can never execute JavaScript. The
+    // `allow-same-origin` token only lets the parent read/drive the frame.
+    this.frame.setAttribute('sandbox', 'allow-same-origin');
+    this.frame.setAttribute('srcdoc', BLANK_DOC);
+    host.appendChild(this.frame);
+
     this.book = null;
     this.currentIndex = -1;
     this.mode = 'original';
     this.scrollPositions = new Map();
+    this.boundDocument = null;
+    this.revision = 0;
     /** @type {((index:number, fragment?:string)=>void)|null} */
     this.onNavigate = null;
-    this.#bindLinkHandling();
+  }
+
+  /** The book document, or null before the iframe has loaded. */
+  get document() {
+    try {
+      return this.frame.contentDocument || null;
+    } catch {
+      return null;
+    }
+  }
+
+  get window() {
+    try {
+      return this.frame.contentWindow || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Load new markup into the sandbox and resolve once the document is ready. */
+  #loadFrame(html) {
+    return new Promise((resolve) => {
+      const frame = this.frame;
+      const onLoad = () => {
+        frame.removeEventListener('load', onLoad);
+        resolve();
+      };
+      frame.addEventListener('load', onLoad);
+      // Make each document unique so an identical string still triggers a load.
+      frame.setAttribute('srcdoc', `${html}<!--r${(this.revision += 1)}-->`);
+    });
   }
 
   #bindLinkHandling() {
-    this.container.addEventListener('click', (event) => {
+    const doc = this.document;
+    if (!doc || this.boundDocument === doc) return;
+    this.boundDocument = doc;
+
+    doc.addEventListener('click', (event) => {
       const anchor = event.target instanceof Element ? event.target.closest('a') : null;
       if (!anchor) return;
       const href = anchor.getAttribute('href');
@@ -83,8 +167,9 @@ export class Reader {
       }
       if (ABSOLUTE_URL.test(href) && !href.startsWith('blob:')) {
         if (/^https?:|^mailto:|^tel:/i.test(href)) {
-          anchor.setAttribute('target', '_blank');
-          anchor.setAttribute('rel', 'noopener noreferrer');
+          // Sandboxed frames cannot open popups themselves; the app does it.
+          event.preventDefault();
+          window.open(href, '_blank', 'noopener,noreferrer');
         }
         return;
       }
@@ -103,9 +188,11 @@ export class Reader {
 
   #scrollToAnchor(fragment) {
     if (!fragment) return;
+    const doc = this.document;
+    if (!doc) return;
     const id = decodeURIComponent(fragment);
-    const target = this.container.querySelector(`[id="${escapeCssIdent(id)}"]`)
-      || this.container.querySelector(`[name="${escapeCssIdent(id)}"]`);
+    const target = doc.getElementById(id)
+      || doc.querySelector(`[name="${escapeCssIdent(id)}"]`);
     target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
@@ -113,8 +200,30 @@ export class Reader {
     this.book = book;
     this.currentIndex = -1;
     this.scrollPositions.clear();
-    this.container.innerHTML = '';
-    this.styleHost.innerHTML = '';
+    this.boundDocument = null;
+    this.frame.setAttribute('srcdoc', BLANK_DOC);
+  }
+
+  /** Copy the app's current reader CSS variables into the book document. */
+  updateTheme() {
+    const doc = this.document;
+    if (!doc?.documentElement) return;
+    const computed = getComputedStyle(this.host);
+    for (const name of READER_VARS) {
+      const value = computed.getPropertyValue(name).trim();
+      if (value) doc.documentElement.style.setProperty(name, value);
+    }
+  }
+
+  #readerVarsCss() {
+    const computed = getComputedStyle(this.host);
+    const decls = READER_VARS
+      .map((name) => {
+        const value = computed.getPropertyValue(name).trim();
+        return value ? `${name}: ${value};` : '';
+      })
+      .join(' ');
+    return `:root { ${decls} }`;
   }
 
   async #rewriteCssUrls(css, baseDir) {
@@ -151,38 +260,63 @@ export class Reader {
       const path = resolvePath(baseDir, href);
       const css = await this.book.readText(path).catch(() => null);
       if (css == null) continue;
-      sheets.push(await this.#rewriteCssUrls(css, dirname(path)));
+      sheets.push(await this.#rewriteCssUrls(sanitizeCss(css), dirname(path)));
       link.remove();
     }
     for (const styleEl of Array.from(doc.querySelectorAll('style'))) {
-      sheets.push(await this.#rewriteCssUrls(styleEl.textContent || '', baseDir));
+      const css = sanitizeCss(styleEl.textContent || '');
+      sheets.push(await this.#rewriteCssUrls(css, baseDir));
       styleEl.remove();
     }
     return sheets;
   }
 
-  async #rewriteResources(doc, baseDir) {
+  #rewriteResources(doc, baseDir) {
     const targets = [
       ['img', 'src'], ['image', 'href'], ['image', 'xlink:href'],
-      ['source', 'src'], ['source', 'srcset'], ['audio', 'src'], ['video', 'src'],
-      ['video', 'poster'], ['object', 'data'], ['embed', 'src'], ['iframe', 'src'], ['track', 'src'],
+      ['source', 'src'], ['audio', 'src'], ['video', 'src'],
+      ['video', 'poster'], ['track', 'src'],
     ];
+    const jobs = [];
     for (const [selector, attr] of targets) {
-      if (attr === 'srcset') continue;
       for (const el of Array.from(doc.querySelectorAll(selector))) {
         const value = el.getAttribute(attr);
         if (!value || ABSOLUTE_URL.test(value.trim())) continue;
-        const url = await this.book.resourceUrl(resolvePath(baseDir, value));
-        if (url) el.setAttribute(attr, url);
+        jobs.push(this.book.resourceUrl(resolvePath(baseDir, value)).then((url) => {
+          if (url) el.setAttribute(attr, url);
+        }));
       }
     }
     for (const el of Array.from(doc.querySelectorAll('image'))) {
       const xlink = el.getAttributeNS(XLINK_NS, 'href');
       if (xlink && !ABSOLUTE_URL.test(xlink)) {
-        const url = await this.book.resourceUrl(resolvePath(baseDir, xlink));
-        if (url) el.setAttributeNS(XLINK_NS, 'xlink:href', url);
+        jobs.push(this.book.resourceUrl(resolvePath(baseDir, xlink)).then((url) => {
+          if (url) el.setAttributeNS(XLINK_NS, 'xlink:href', url);
+        }));
       }
     }
+    return Promise.all(jobs);
+  }
+
+  #buildDocument(doc, sheets, rtl) {
+    const styles = [BASE_CSS, this.#readerVarsCss(), ...sheets]
+      .filter(Boolean)
+      .map(escapeStyleText)
+      .join('\n');
+    return [
+      '<!DOCTYPE html>',
+      `<html dir="${rtl ? 'rtl' : 'ltr'}">`,
+      '<head>',
+      '<meta charset="utf-8">',
+      `<meta http-equiv="Content-Security-Policy" content="${BOOK_CSP}">`,
+      '<meta name="referrer" content="no-referrer">',
+      `<style>${styles}</style>`,
+      '</head>',
+      '<body><div class="page"><div class="chapter-content" part="content">',
+      doc.body ? doc.body.innerHTML : '',
+      '</div></div></body>',
+      '</html>',
+    ].join('\n');
   }
 
   /**
@@ -202,35 +336,26 @@ export class Reader {
     const markup = translated ? chapter.translated : await book.getChapterRaw(index);
 
     if (this.currentIndex >= 0 && this.currentIndex !== index) {
-      this.scrollPositions.set(this.currentIndex, this.host.scrollTop);
+      this.scrollPositions.set(this.currentIndex, this.window?.scrollY || 0);
     }
 
     const baseDir = dirname(chapter.path);
     const doc = new DOMParser().parseFromString(markup, 'text/html');
     for (const script of Array.from(doc.querySelectorAll('script'))) script.remove();
-    await this.#rewriteResources(doc, baseDir);
     const sheets = await this.#collectStyles(doc, baseDir);
+    sanitizeDocument(doc);
+    await this.#rewriteResources(doc, baseDir);
 
-    this.styleHost.innerHTML = '';
-    for (const css of sheets) {
-      const styleEl = document.createElement('style');
-      styleEl.textContent = css;
-      this.styleHost.appendChild(styleEl);
-    }
-
-    this.container.innerHTML = '';
-    this.container.setAttribute('dir', options.rtl ? 'rtl' : 'ltr');
-    for (const node of Array.from(doc.body.childNodes)) {
-      this.container.appendChild(document.importNode(node, true));
-    }
+    await this.#loadFrame(this.#buildDocument(doc, sheets, options.rtl));
+    this.#bindLinkHandling();
 
     this.currentIndex = index;
     this.mode = mode;
 
     if (options.restoreScroll && this.scrollPositions.has(index)) {
-      this.host.scrollTop = this.scrollPositions.get(index);
+      this.scrollTo(this.scrollPositions.get(index));
     } else {
-      this.host.scrollTop = 0;
+      this.scrollTo(0);
     }
 
     if (options.fragment) {
@@ -240,7 +365,11 @@ export class Reader {
     return { ok: true, mode, requestedTranslated: requested === 'translated', hasTranslation: chapter.translated != null };
   }
 
+  scrollTo(position) {
+    this.window?.scrollTo(0, position || 0);
+  }
+
   scrollToTop() {
-    this.host.scrollTop = 0;
+    this.scrollTo(0);
   }
 }

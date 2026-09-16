@@ -63,7 +63,17 @@ p { text-indent: 1.2em; }
 .cover { background-image: url("../images/pic.png"); }
 `;
 
-const chapter = (n, title) => `<?xml version="1.0" encoding="UTF-8"?>
+// The four payload routes from epub-security-audit.md, plus an external
+// tracking image. They must never execute and external resources must be
+// stripped once the reader has rendered the chapter.
+const PAYLOAD = `
+    <img src="https://example.com/tracker.png" alt="external"/>
+    <img src="data:image/png;base64,AA==" onerror="window.top.__pwned='onerror'"/>
+    <script>window.top.__pwned='script';</script>
+    <iframe srcdoc="&lt;script&gt;window.top.__pwned='srcdoc'&lt;/script&gt;"></iframe>
+    <a href="javascript:window.top.__pwned='javascript-url'">click me</a>`;
+
+const chapter = (n, title, extra = '') => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
@@ -75,7 +85,7 @@ const chapter = (n, title) => `<?xml version="1.0" encoding="UTF-8"?>
     <h1>${title}</h1>
     <p>Il \u00e9tait une fois &nbsp;un petit livre que l'on voulait traduire &amp; partager.</p>
     <p>Ceci est le <em>chapitre</em> num\u00e9ro ${n} de notre histoire.</p>
-    <figure class="cover"><img src="images/pic.png" alt="illustration"/></figure>
+    <figure class="cover"><img src="images/pic.png" alt="illustration"/></figure>${extra}
   </section>
 </body>
 </html>`;
@@ -88,7 +98,7 @@ export async function buildFixture() {
   zip.file('OEBPS/nav.xhtml', NAV);
   zip.file('OEBPS/styles/main.css', CSS);
   zip.file('OEBPS/images/pic.png', PNG, { binary: true });
-  zip.file('OEBPS/chapter1.xhtml', chapter(1, 'Le Premier Chapitre'));
+  zip.file('OEBPS/chapter1.xhtml', chapter(1, 'Le Premier Chapitre', PAYLOAD));
   zip.file('OEBPS/chapter2.xhtml', chapter(2, 'Le Deuxi\u00e8me Chapitre'));
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }

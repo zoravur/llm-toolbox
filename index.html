@@ -19,6 +19,26 @@
         </div>
       </header>
 
+      <!-- Security awareness: see epub-security-audit.md for the full report. -->
+      <section class="security-notice" id="security-notice" role="note" aria-label="Security notice">
+        <div class="security-notice-head">
+          <span class="security-notice-icon" aria-hidden="true">⚠</span>
+          <strong>Security notice</strong>
+          <button class="icon-btn" id="security-dismiss" type="button" title="Dismiss" aria-label="Dismiss security notice">✕</button>
+        </div>
+        <p>
+          Treat EPUB files as untrusted content. A security audit
+          (<a href="epub-security-audit.md" target="_blank" rel="noopener noreferrer">epub-security-audit.md</a>)
+          found that a malicious book could try to run JavaScript in this page and read your API key.
+          Chapters are now rendered in a sandboxed frame with scripts disabled and are sanitised,
+          external resources are blocked, browser archive expansion is bounded, and the local
+          server no longer serves private files.
+        </p>
+        <p class="security-notice-warn">
+          Only paste a DeepSeek API key into a trusted copy of this app, and prefer a restricted key.
+        </p>
+      </section>
+
       <section class="block">
         <h2 class="block-title">1 · Book</h2>
         <div

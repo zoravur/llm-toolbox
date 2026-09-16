@@ -6,8 +6,13 @@ async function pageTest() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const steps = [];
   const step = (name, ok, extra) => steps.push({ name, ok: Boolean(ok), extra: extra === undefined ? '' : String(extra) });
-  const shadow = () => document.getElementById('reader').shadowRoot;
-  const content = () => shadow().querySelector('.chapter-content');
+  const readerFrame = () => document.getElementById('reader').querySelector('iframe');
+  const frameDoc = () => readerFrame().contentDocument;
+  const content = () => frameDoc().querySelector('.chapter-content') || frameDoc().body;
+
+  // --- Priority: users must be told about the known risks ------------------
+  const notice = document.getElementById('security-notice');
+  step('security notice is shown to users', !!notice && !notice.hidden && /untrusted/i.test(notice.textContent));
 
   // --- Stub the DeepSeek endpoint -----------------------------------------
   const realFetch = window.fetch.bind(window);
@@ -79,8 +84,42 @@ async function pageTest() {
   step('chapter renders in the reader', originalText.includes('Le Premier Chapitre'), originalText.slice(0, 60));
   step('images are rewritten to blob URLs', /blob:/.test(content().innerHTML));
   step('entity + inline markup survive rendering', content().querySelector('em') && /\u00a0/.test(originalText));
-  step('epub stylesheet is inlined', shadow().querySelectorAll('.epub-styles style').length >= 1);
-  step('shadow DOM isolates styles', shadow().querySelectorAll('body').length === 0);
+  step('epub stylesheet is inlined', frameDoc().querySelectorAll('style').length >= 1);
+
+  // --- Security: book content is isolated and inert -----------------------
+  const frame = readerFrame();
+  const sandbox = frame.getAttribute('sandbox') || '';
+  step('book renders in a sandboxed iframe', frame.tagName === 'IFRAME' && sandbox !== null);
+  step('book sandbox disables scripts', !/allow-scripts/.test(sandbox), sandbox);
+  const csp = frameDoc().querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') || '';
+  step('book document carries a restrictive CSP', /script-src 'none'/.test(csp) && /frame-src 'none'/.test(csp));
+  step('no <script> survives in the rendered book', frameDoc().querySelectorAll('script').length === 0);
+  step('no inline event handlers survive', !/\son[a-z]+\s*=/i.test(content().innerHTML));
+  step('no active embedded documents survive', frameDoc().querySelectorAll('iframe, object, embed').length === 0);
+  step('javascript: hrefs are stripped', !/javascript:/i.test(content().innerHTML));
+  step('external resource URLs are stripped', !/example\.com/.test(content().innerHTML));
+  step('EPUB payload scripts never ran', !window.__pwned, String(window.__pwned));
+
+  // Defence in depth: even markup injected past the sanitizer must stay inert.
+  const evilLink = frameDoc().createElement('a');
+  evilLink.setAttribute('href', 'javascript:window.top.__pwned="javascript-url"');
+  content().appendChild(evilLink);
+  evilLink.click();
+  await sleep(60);
+  step('javascript: navigation is blocked by the sandbox', !window.__pwned, String(window.__pwned));
+
+  const evilImg = frameDoc().createElement('img');
+  evilImg.setAttribute('onerror', 'window.top.__pwned="onerror"');
+  evilImg.setAttribute('src', 'data:image/png;base64,AA==');
+  content().appendChild(evilImg);
+  await sleep(120);
+  step('inline event handlers are blocked by the sandbox', !window.__pwned, String(window.__pwned));
+
+  const evilFrame = frameDoc().createElement('iframe');
+  evilFrame.setAttribute('srcdoc', '<script>window.top.__pwned="srcdoc";<\/script>');
+  frameDoc().body.appendChild(evilFrame);
+  await sleep(120);
+  step('nested srcdoc scripts are blocked by the sandbox', !window.__pwned, String(window.__pwned));
 
   // --- Translate with the stubbed endpoint --------------------------------
   document.getElementById('api-key').value = 'sk-test-key';

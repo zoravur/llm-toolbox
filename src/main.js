@@ -21,6 +21,8 @@ const els = {
   app: $('app'),
   panel: $('panel'),
   sidebarToggle: $('sidebar-toggle'),
+  securityNotice: $('security-notice'),
+  securityDismiss: $('security-dismiss'),
   dropzone: $('dropzone'),
   fileInput: $('file-input'),
   bookCard: $('book-card'),
@@ -215,12 +217,14 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   els.themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
   els.themeToggle.textContent = theme === 'dark' ? '☀' : '☾';
+  state.reader.updateTheme();
 }
 
 function applyFontSize(size) {
   const clamped = Math.max(13, Math.min(30, size));
   state.settings.fontSize = clamped;
   els.reader.style.setProperty('--reader-font-size', `${clamped}px`);
+  state.reader.updateTheme();
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +776,10 @@ function bindEvents() {
   });
 
   els.sidebarToggle.addEventListener('click', () => els.app.classList.toggle('sidebar-open'));
+
+  els.securityDismiss?.addEventListener('click', () => {
+    els.securityNotice.hidden = true;
+  });
 
   els.toggleKey.addEventListener('click', () => {
     const showing = els.apiKey.type === 'text';
